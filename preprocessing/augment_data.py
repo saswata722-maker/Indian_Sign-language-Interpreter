@@ -47,7 +47,7 @@ def time_warp(seq: np.ndarray, factor: float) -> np.ndarray:
     idx = np.linspace(0, t - 1, new_t)
     lo = np.floor(idx).astype(int)
     hi = np.clip(lo + 1, 0, t - 1)
-    w = (idx - lo)[:, None, None].astype(seq.dtype)
+    w = (idx - lo)[:, None].astype(seq.dtype)  # (new_t, 1)
     return (1 - w) * seq[lo] + w * seq[hi]
 
 
