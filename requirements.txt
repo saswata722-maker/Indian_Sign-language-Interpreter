@@ -1,11 +1,16 @@
-opencv-python
-mediapipe
-torch
-torchvision
-numpy
-pandas
-scikit-learn
-onnx
-onnxruntime
-pyyaml
-matplotlib
+# Real-time ISL detection - Python 3.12 environment
+# NOTE: torch must come from the cu128 index for the RTX 5050 (Blackwell sm_120):
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+torch>=2.11.0
+torchvision>=0.26.0
+mediapipe==0.10.21
+opencv-contrib-python>=4.10
+numpy>=1.26
+pandas>=2.2
+scikit-learn>=1.4
+pyyaml>=6.0
+matplotlib>=3.8
+tqdm>=4.66
+onnx>=1.16
+onnxruntime>=1.18
+

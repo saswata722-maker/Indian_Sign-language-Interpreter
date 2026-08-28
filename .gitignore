@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Generated data / pipeline outputs (re-creatable; large)
+data/landmarks/
+data/splits/
+data/raw_data/
+models/checkpoints/
+runs/
+logs/
+
+# Utils
+utils/label_map*.json
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/

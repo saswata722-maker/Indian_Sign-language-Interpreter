@@ -1,0 +1,38 @@
+# Hyperparameters for INCLUDE-50 landmark-sequence training
+
+data:
+  raw_dir: data/raw_data
+  landmarks_dir: data/landmarks
+  splits_dir: data/splits
+  label_map: utils/label_map.json
+  seq_len: 96            # frames per model input (~3.2 s at 30 fps)
+  include_face: true     # 468 face landmarks -> D = 1632 (false -> 234)
+  num_classes: 50        # INCLUDE-50
+
+model:
+  d_model: 256
+  lstm_layers: 2
+  transformer_layers: 4
+  nhead: 8
+  ff_dim: 512
+  dropout: 0.3
+
+train:
+  epochs: 80
+  batch_size: 32
+  lr: 0.001
+  weight_decay: 0.0001
+  label_smoothing: 0.1
+  scheduler_t_max: 80    # cosine annealing T_max (epochs)
+  patience: 15           # early stopping on val accuracy
+  num_workers: 4
+  seed: 42
+  amp: true              # mixed precision on CUDA
+  checkpoint_dir: models/checkpoints
+  runs_dir: runs
+
+inference:
+  window: 96             # sliding-window length (frames)
+  stride: 8              # predict every N frames
+  smooth_k: 5            # moving-majority smoothing over last K predictions
+  conf_threshold: 0.6
