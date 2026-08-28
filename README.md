@@ -55,6 +55,22 @@ $py = "C:\Users\saswa\AppData\Local\Programs\Python\Python312\python.exe"
 & $py inference\live_predict.py
 ```
 
+## 3b. Alternative: extract landmarks in the cloud (Kaggle), train locally
+
+Landmark extraction is CPU-bound (MediaPipe Holistic) and can take hours locally.
+To keep your local CPU free, run just the **extraction** step on Kaggle's free
+CPU, download the resulting `.npy` files, and **train on your local GPU**:
+
+1. Upload `kaggle/ISL_landmark_extraction.ipynb` to a Kaggle notebook
+   (accelerator = **CPU**; mount the `daskoushik/include` dataset).
+2. Run it to produce + download `landmarks.zip`.
+3. `Expand-Archive landmarks.zip -DestinationPath data\landmarks`
+4. `& $py utils\make_splits.py --top_n 50`
+5. `& $py training\train.py`
+
+Full walkthrough (incl. the face-dimension consistency rule): `kaggle/README_kaggle.md`.
+
+
 ## 4. Configuration
 
 All hyperparameters: `training/config.yaml` (seq_len, d_model, LSTM/Transformer
