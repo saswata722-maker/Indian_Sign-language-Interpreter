@@ -1,0 +1,11 @@
+opencv-python
+mediapipe
+torch
+torchvision
+numpy
+pandas
+scikit-learn
+onnx
+onnxruntime
+pyyaml
+matplotlib
