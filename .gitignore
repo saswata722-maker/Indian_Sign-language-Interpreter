@@ -9,6 +9,7 @@ venv/
 data/landmarks/
 data/splits/
 data/raw_data/
+raw_data/
 models/checkpoints/
 runs/
 logs/
