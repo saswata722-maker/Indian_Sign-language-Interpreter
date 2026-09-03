@@ -1,0 +1,46 @@
+# ISL-Sense Training Configuration
+# Based on AI4Bharat INCLUDE & OpenHands best practices
+
+# Paths
+raw_data_dir: "raw_data"
+landmarks_dir: "landmarks"
+model_save_dir: "models"
+logs_dir: "logs"
+
+# Landmark extraction
+extraction:
+  include_face: false      # false = 234 dims (recommended), true = 1632 dims
+  model_complexity: 1      # 0=light, 1=full, 2=heavy
+  min_detection_confidence: 0.5
+  min_tracking_confidence: 0.5
+
+# Preprocessing
+preprocessing:
+  target_seq_len: 40       # frames per sequence (resample/pad to this)
+  temporal_jitter: 0.15    # ±15% speed augmentation
+  spatial_noise: 0.01      # Gaussian noise std
+
+# Model architecture
+model:
+  input_dim: 234           # 234 for pose+hands+flags, 1632 with face
+  d_model: 128             # transformer embedding dimension
+  nhead: 4                 # attention heads
+  num_transformer_layers: 2
+  lstm_hidden: 64          # d_model // 2 for bidirectional
+  dropout: 0.2
+
+# Training
+training:
+  num_epochs: 30
+  batch_size: 16
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  label_smoothing: 0.1
+  val_split: 0.2
+  random_seed: 42
+
+# Inference
+inference:
+  seq_len: 40              # sliding window length
+  confidence_threshold: 0.75
+  smoothing_window: 5      # majority vote over last N predictions
