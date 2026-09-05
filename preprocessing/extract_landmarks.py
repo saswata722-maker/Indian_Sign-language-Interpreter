@@ -16,6 +16,9 @@ Applies torso-centered & scale-invariant normalization:
 Output: .npy files with shape (T_frames, feature_dim) float32
   - include_feature=False → 234 dims (recommended for training/live)
   - include_face=True → 1632 dims (research, subtle facial expressions)
+
+Multiprocessing support: uses ProcessPoolExecutor to distribute videos
+across multiple worker processes for faster extraction.
 """
 
 import cv2
@@ -23,6 +26,8 @@ import numpy as np
 import mediapipe as mp
 from pathlib import Path
 from tqdm import tqdm
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import os
 
 
 class LandmarkExtractor:
@@ -94,31 +99,114 @@ class LandmarkExtractor:
         self.mp_holistic.close()
 
 
-def batch_extract(raw_root="raw_data", save_root="landmarks", include_face=False):
-    """Batch-process all videos and save .npy files."""
-    extractor = LandmarkExtractor(include_face=include_face)
+# Global variable for worker processes (each worker gets its own extractor)
+_worker_extractor = None
+
+
+def _worker_init(include_face, model_complexity, min_detection_confidence, min_tracking_confidence):
+    """Initialize a LandmarkExtractor instance for each worker process."""
+    global _worker_extractor
+    _worker_extractor = LandmarkExtractor(
+        include_face=include_face,
+        model_complexity=model_complexity,
+        min_detection_confidence=min_detection_confidence,
+        min_tracking_confidence=min_tracking_confidence
+    )
+
+
+def _worker_process_video(args):
+    """Worker function to process a single video and save .npy file."""
+    video_path_str, raw_root_str, save_root_str = args
+    video_path = Path(video_path_str)
+    raw_path = Path(raw_root_str)
+    save_path = Path(save_root_str)
+
+    rel = video_path.relative_to(raw_path).with_suffix(".npy")
+    out_file = save_path / rel
+
+    # Skip if already processed (resume support)
+    if out_file.exists():
+        return ("skipped", str(rel))
+
+    try:
+        out_file.parent.mkdir(parents=True, exist_ok=True)
+        feats = _worker_extractor.extract_video(video_path)
+        if feats is not None:
+            np.save(out_file, feats)
+            return ("ok", str(rel))
+        else:
+            return ("empty", str(rel))
+    except Exception as e:
+        return ("error", f"{rel}: {str(e)}")
+
+
+def batch_extract(raw_root="raw_data", save_root="landmarks", include_face=False,
+                  model_complexity=1, min_detection_confidence=0.5,
+                  min_tracking_confidence=0.5, num_workers=None):
+    """Batch-process all videos and save .npy files using multiprocessing."""
     raw_path = Path(raw_root)
     save_path = Path(save_root)
 
-    video_files = (
+    video_files = sorted(
         list(raw_path.rglob("*.MOV"))
         + list(raw_path.rglob("*.mp4"))
         + list(raw_path.rglob("*.mov"))
         + list(raw_path.rglob("*.MP4"))
     )
 
-    print(f"Found {len(video_files)} videos in {raw_root}. Extracting...")
-    for v_path in tqdm(video_files, desc="Extracting"):
+    # Filter out already-processed videos
+    videos_to_process = []
+    already_done = 0
+    for v_path in video_files:
         rel = v_path.relative_to(raw_path).with_suffix(".npy")
         out_file = save_path / rel
         if out_file.exists():
-            continue
-        out_file.parent.mkdir(parents=True, exist_ok=True)
-        feats = extractor.extract_video(v_path)
-        if feats is not None:
-            np.save(out_file, feats)
-    extractor.close()
-    print(f"Done. Landmarks saved to {save_root}/")
+            already_done += 1
+        else:
+            videos_to_process.append(
+                (str(v_path), raw_root, save_root)
+            )
+
+    print(f"Found {len(video_files)} videos in {raw_root}.")
+    print(f"  - Already processed (skipping): {already_done}")
+    print(f"  - To process: {len(videos_to_process)}")
+
+    if len(videos_to_process) == 0:
+        print("All videos already processed!")
+        return
+
+    # Determine number of workers
+    if num_workers is None:
+        num_workers = min(os.cpu_count() or 4, 8)
+    print(f"  - Workers: {num_workers}")
+
+    # Process videos in parallel
+    results = {"ok": 0, "skipped": 0, "empty": 0, "error": 0}
+    with ProcessPoolExecutor(
+        max_workers=num_workers,
+        initializer=_worker_init,
+        initargs=(include_face, model_complexity,
+                  min_detection_confidence, min_tracking_confidence)
+    ) as executor:
+        futures = {
+            executor.submit(_worker_process_video, args): args
+            for args in videos_to_process
+        }
+
+        with tqdm(total=len(videos_to_process), desc="Extracting") as pbar:
+            for future in as_completed(futures):
+                status, info = future.result()
+                results[status] = results.get(status, 0) + 1
+                pbar.update(1)
+                if status == "error":
+                    pbar.write(f"Error: {info}")
+
+    print(f"\nDone! Results:")
+    print(f"  - Successfully processed: {results['ok']}")
+    print(f"  - Skipped (already done): {results['skipped']}")
+    print(f"  - Empty (no frames): {results['empty']}")
+    print(f"  - Errors: {results['error']}")
+    print(f"Landmarks saved to {save_root}/")
 
 
 if __name__ == "__main__":
