@@ -22,7 +22,7 @@ preprocessing:
 
 # Model architecture
 model:
-  input_dim: 234           # 234 for pose+hands+flags, 1632 with face
+  input_dim: 228           # 228 as detected from extracted landmarks
   d_model: 128             # transformer embedding dimension
   nhead: 4                 # attention heads
   num_transformer_layers: 2
@@ -38,6 +38,10 @@ training:
   label_smoothing: 0.1
   val_split: 0.2
   random_seed: 42
+  early_stopping_patience: 15
+  early_stopping_min_delta: 0.001
+  max_grad_norm: 1.0
+  use_amp: true
 
 # Inference
 inference:

@@ -10,9 +10,14 @@ data/landmarks/
 data/splits/
 data/raw_data/
 raw_data/
-models/checkpoints/
-runs/
-logs/
+landmarks/
+extraction_log.txt
+*.log
+
+# Model weights (large binaries; reproducible via training)
+models/
+*.pth
+*.pt
 
 # Utils
 utils/label_map*.json
