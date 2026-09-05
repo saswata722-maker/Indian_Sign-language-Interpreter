@@ -1,28 +1,42 @@
-# Python
+﻿# Python
 __pycache__/
 *.py[cod]
 *.egg-info/
 .venv/
 venv/
+.pytest_cache/
+build/
+dist/
 
 # Generated data / pipeline outputs (re-creatable; large)
-data/landmarks/
-data/splits/
-data/raw_data/
+data/
 raw_data/
 landmarks/
-extraction_log.txt
+
+# Logs
 *.log
+extraction_log.txt
+training_log.txt
 
 # Model weights (large binaries; reproducible via training)
 models/
 *.pth
 *.pt
+*.onnx
+*.ckpt
 
 # Utils
 utils/label_map*.json
 
+# Environment / secrets
+.env
+
+# Jupyter
+.ipynb_checkpoints/
+
 # OS / IDE
 .DS_Store
 Thumbs.db
-.vscode/training_log.txt
+desktop.ini
+.vscode/
+.idea/
