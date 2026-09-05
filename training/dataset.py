@@ -19,6 +19,7 @@ from preprocessing.augment_data import augment_sequence
 def resample_sequence(seq, target_len=40):
     """
     Resample a sequence to a fixed length using linear interpolation.
+    Vectorized across all feature dimensions for speed.
 
     Args:
         seq: np.ndarray of shape (T, D).
@@ -30,11 +31,14 @@ def resample_sequence(seq, target_len=40):
     curr_len = seq.shape[0]
     if curr_len == target_len:
         return seq
+    if curr_len == 1:
+        return np.repeat(seq, target_len, axis=0)
     indices = np.linspace(0, curr_len - 1, target_len)
-    resampled = np.zeros((target_len, seq.shape[1]), dtype=np.float32)
-    for dim in range(seq.shape[1]):
-        resampled[:, dim] = np.interp(indices, np.arange(curr_len), seq[:, dim])
-    return resampled
+    lo = np.floor(indices).astype(np.int64)
+    hi = np.minimum(lo + 1, curr_len - 1)
+    frac = (indices - lo).astype(np.float32)[:, None]
+    resampled = seq[lo] * (1.0 - frac) + seq[hi] * frac
+    return resampled.astype(np.float32)
 
 
 class ISLLandmarkDataset(Dataset):
@@ -48,11 +52,13 @@ class ISLLandmarkDataset(Dataset):
         augment: Whether to apply data augmentation.
     """
 
-    def __init__(self, npy_files, labels, target_len=40, augment=False):
+    def __init__(self, npy_files, labels, target_len=40, augment=False,
+                 use_velocity=False):
         self.npy_files = npy_files
         self.labels = labels
         self.target_len = target_len
         self.augment = augment
+        self.use_velocity = use_velocity
 
     def __len__(self):
         return len(self.npy_files)
@@ -72,18 +78,25 @@ class ISLLandmarkDataset(Dataset):
         if self.augment:
             data = augment_sequence(data)
 
+        # Append velocity (frame-to-frame delta) features: signs are defined
+        # by motion, so deltas give the model a direct motion signal.
+        if self.use_velocity:
+            delta = np.diff(data, axis=0, prepend=data[:1])
+            data = np.concatenate([data, delta], axis=1)
+
         return (
             torch.tensor(data, dtype=torch.float32),
             torch.tensor(self.labels[idx], dtype=torch.long),
         )
 
 
-def discover_classes(landmarks_dir="landmarks"):
+def discover_classes(landmarks_dir="landmarks", exclude=("Extra", "extra")):
     """
     Discover sign classes from the directory structure.
 
     Args:
         landmarks_dir: Root directory containing class subdirectories with .npy files.
+        exclude: Class folder names to exclude (junk/non-sign folders).
 
     Returns:
         tuple: (class_folders, class_to_idx)
@@ -93,7 +106,7 @@ def discover_classes(landmarks_dir="landmarks"):
     root = Path(landmarks_dir)
     class_folders = sorted([
         cf for cf in root.rglob("*")
-        if cf.is_dir() and list(cf.glob("*.npy"))
+        if cf.is_dir() and list(cf.glob("*.npy")) and cf.name not in exclude
     ])
     # Assign sequential indices to unique class names (handles duplicate
     # folder names by merging them into a single class)

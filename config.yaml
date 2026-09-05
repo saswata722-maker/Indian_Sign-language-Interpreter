@@ -16,13 +16,14 @@ extraction:
 
 # Preprocessing
 preprocessing:
-  target_seq_len: 40       # frames per sequence (resample/pad to this)
+  target_seq_len: 64       # frames per sequence (matches ~66 frame mean)
   temporal_jitter: 0.15    # ±15% speed augmentation
   spatial_noise: 0.01      # Gaussian noise std
+  use_velocity: true       # append frame-to-frame deltas (doubles input_dim)
 
 # Model architecture
 model:
-  input_dim: 228           # 228 as detected from extracted landmarks
+  input_dim: 456           # 228 landmarks + 228 velocity deltas
   d_model: 128             # transformer embedding dimension
   nhead: 4                 # attention heads
   num_transformer_layers: 2
@@ -31,13 +32,14 @@ model:
 
 # Training
 training:
-  num_epochs: 30
+  num_epochs: 80
   batch_size: 16
   learning_rate: 0.001
   weight_decay: 0.0001
   label_smoothing: 0.1
   val_split: 0.2
   random_seed: 42
+  use_class_weights: true  # weight loss inversely to class frequency
   early_stopping_patience: 15
   early_stopping_min_delta: 0.001
   max_grad_norm: 1.0

@@ -55,17 +55,18 @@ def train_isl(landmarks_dir="landmarks", config_path="config.yaml"):
     )
     print(f"Train: {len(train_f)}, Validation: {len(val_f)}")
 
+    use_velocity = config['preprocessing'].get('use_velocity', False)
     train_loader = DataLoader(
         ISLLandmarkDataset(train_f, train_l,
                            target_len=config['preprocessing']['target_seq_len'],
-                           augment=True),
+                           augment=True, use_velocity=use_velocity),
         batch_size=config['training']['batch_size'],
         shuffle=True, num_workers=0, pin_memory=True
     )
     val_loader = DataLoader(
         ISLLandmarkDataset(val_f, val_l,
                            target_len=config['preprocessing']['target_seq_len'],
-                           augment=False),
+                           augment=False, use_velocity=use_velocity),
         batch_size=config['training']['batch_size'],
         shuffle=False, num_workers=0, pin_memory=True
     )
@@ -89,10 +90,17 @@ def train_isl(landmarks_dir="landmarks", config_path="config.yaml"):
 
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
 
-    # Loss, optimizer
-    criterion = nn.CrossEntropyLoss(
-        label_smoothing=config['training']['label_smoothing']
-    )
+    # Loss (with optional class weighting for imbalanced classes)
+    label_smoothing = config['training']['label_smoothing']
+    if config['training'].get('use_class_weights', False):
+        import numpy as np
+        counts = np.bincount(train_l, minlength=len(class_to_idx))
+        weights = len(train_l) / (len(class_to_idx) * np.maximum(counts, 1))
+        weights = torch.tensor(weights, dtype=torch.float32).to(device)
+        criterion = nn.CrossEntropyLoss(weight=weights, label_smoothing=label_smoothing)
+        print(f"Using class-weighted loss (rarest class weight: {weights.max().item():.1f}x)")
+    else:
+        criterion = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=config['training']['learning_rate'],
