@@ -25,4 +25,4 @@ utils/label_map*.json
 # OS / IDE
 .DS_Store
 Thumbs.db
-.vscode/
+.vscode/training_log.txt

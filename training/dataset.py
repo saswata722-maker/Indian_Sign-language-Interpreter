@@ -95,7 +95,12 @@ def discover_classes(landmarks_dir="landmarks"):
         cf for cf in root.rglob("*")
         if cf.is_dir() and list(cf.glob("*.npy"))
     ])
-    class_to_idx = {cf.name: i for i, cf in enumerate(class_folders)}
+    # Assign sequential indices to unique class names (handles duplicate
+    # folder names by merging them into a single class)
+    class_to_idx = {}
+    for cf in class_folders:
+        if cf.name not in class_to_idx:
+            class_to_idx[cf.name] = len(class_to_idx)
     return class_folders, class_to_idx
 
 
