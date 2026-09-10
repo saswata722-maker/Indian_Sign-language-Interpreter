@@ -47,6 +47,6 @@ training:
 
 # Inference
 inference:
-  seq_len: 40              # sliding window length
-  confidence_threshold: 0.75
+  seq_len: 64              # sliding window length (matches training target_seq_len)
+  confidence_threshold: 0.35  # 262-class softmax rarely exceeds 0.5; 0.35 is practical
   smoothing_window: 5      # majority vote over last N predictions

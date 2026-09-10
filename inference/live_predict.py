@@ -28,7 +28,7 @@ from training.model import HybridSignModel
 
 
 def run_live(model_path="models/best_model.pth", config_path="config.yaml",
-             class_names=None, seq_len=40, threshold=0.75):
+             class_names=None, seq_len=None, threshold=None):
     """
     Run live ISL recognition from webcam.
 
@@ -36,13 +36,18 @@ def run_live(model_path="models/best_model.pth", config_path="config.yaml",
         model_path: Path to trained model checkpoint.
         config_path: Path to configuration YAML file.
         class_names: List of class names (overrides checkpoint class names).
-        seq_len: Sliding window length (number of frames).
-        confidence_threshold: Minimum confidence to accept a prediction.
+        seq_len: Sliding window length (defaults to config inference.seq_len).
+        threshold: Minimum confidence to accept a prediction.
     """
     # Load config
     import yaml
     with open(config_path, 'r') as f:
         config = yaml.safe_load(f)
+
+    if seq_len is None:
+        seq_len = config['inference']['seq_len']
+    if threshold is None:
+        threshold = config['inference']['confidence_threshold']
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -91,6 +96,7 @@ def run_live(model_path="models/best_model.pth", config_path="config.yaml",
     recent_preds = collections.deque(maxlen=config['inference']['smoothing_window'])
     current_label = "Waiting for gesture..."
     confidence = 0.0
+    last_probs = []  # top-3 (name, prob) for on-screen display
 
     print("=" * 50)
     print("ISL-Sense Live Recognition")
@@ -115,14 +121,25 @@ def run_live(model_path="models/best_model.pth", config_path="config.yaml",
 
         # Run inference once buffer is full
         if len(frame_buffer) == seq_len:
-            seq = np.array(frame_buffer)
+            seq = np.array(frame_buffer, dtype=np.float32)
+
+            # Append velocity (frame-to-frame deltas) to match training input
+            use_velocity = model_config['preprocessing'].get('use_velocity', False)
+            if use_velocity:
+                delta = np.diff(seq, axis=0, prepend=seq[:1])
+                seq = np.concatenate([seq, delta], axis=1)
+
             tensor_x = torch.tensor(seq, dtype=torch.float32).unsqueeze(0).to(device)
 
             with torch.no_grad():
                 logits = model(tensor_x)
                 probs = torch.softmax(logits, dim=1).cpu().numpy()[0]
-                best_idx = np.argmax(probs)
+                top3_idx = np.argsort(probs)[::-1][:3]
+                top3 = [(class_names[i], probs[i]) for i in top3_idx]
+                best_idx = top3_idx[0]
                 best_prob = probs[best_idx]
+
+                last_probs = top3  # for on-screen display
 
                 if best_prob >= threshold:
                     recent_preds.append(class_names[best_idx])
@@ -132,10 +149,23 @@ def run_live(model_path="models/best_model.pth", config_path="config.yaml",
                     confidence = best_prob
 
         # Render subtitle overlay
-        cv2.rectangle(frame, (0, h - 70), (w, h), (20, 20, 20), -1)
-        cv2.putText(frame, f"Sign: {current_label} ({confidence*100:.1f}%)",
-                    (20, h - 25), cv2.FONT_HERSHEY_SIMPLEX, 0.9,
-                    (0, 255, 128), 2, cv2.LINE_AA)
+        cv2.rectangle(frame, (0, h - 110), (w, h), (20, 20, 20), -1)
+        if confidence > 0:
+            color = (0, 255, 128) if confidence >= threshold else (0, 200, 255)
+            cv2.putText(frame, f"Sign: {current_label} ({confidence*100:.1f}%)",
+                        (20, h - 25), cv2.FONT_HERSHEY_SIMPLEX, 0.9,
+                        color, 2, cv2.LINE_AA)
+        else:
+            cv2.putText(frame, f"Sign: {current_label}",
+                        (20, h - 25), cv2.FONT_HERSHEY_SIMPLEX, 0.9,
+                        (160, 160, 160), 2, cv2.LINE_AA)
+
+        # Show live top-3 model guesses (always visible, even below threshold)
+        for k, (name, prob) in enumerate(last_probs[:3]):
+            bar = "#" * int(prob * 30)
+            cv2.putText(frame, f"{name[:28]:28s} {prob*100:4.1f}% {bar}",
+                        (20, h - 80 + k * 18), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
+                        (200, 200, 200), 1, cv2.LINE_AA)
 
         # Show buffer status
         cv2.putText(frame, f"Buffer: {len(frame_buffer)}/{seq_len}",
