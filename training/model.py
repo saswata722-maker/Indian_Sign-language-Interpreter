@@ -51,6 +51,15 @@ class HybridSignModel(nn.Module):
             encoder_layer, num_layers=num_transformer_layers
         )
 
+        # Temporal attention pooling (replaces mean pooling): lets the model
+        # focus on the discriminative "signing" frames instead of weighting
+        # all frames (incl. idle ones) equally.
+        self.attn_pool = nn.Sequential(
+            nn.Linear(d_model, d_model // 2),
+            nn.Tanh(),
+            nn.Linear(d_model // 2, 1),
+        )
+
         # Classification head
         self.classifier = nn.Sequential(
             nn.LayerNorm(d_model),
@@ -68,8 +77,13 @@ class HybridSignModel(nn.Module):
         Returns:
             logits: Tensor of shape (Batch, num_classes).
         """
-        x = self.input_proj(x)           # (B, T, d_model)
-        lstm_out, _ = self.lstm(x)       # (B, T, d_model)
-        trans_out = self.transformer(lstm_out)  # (B, T, d_model)
-        pooled = torch.mean(trans_out, dim=1)   # (B, d_model)
-        return self.classifier(pooled)    # (B, num_classes)
+        x = self.input_proj(x)                    # (B, T, d_model)
+        lstm_out, _ = self.lstm(x)                # (B, T, d_model)
+        trans_out = self.transformer(lstm_out)    # (B, T, d_model)
+
+        # Attention pooling over time
+        attn_scores = self.attn_pool(trans_out)   # (B, T, 1)
+        attn_weights = torch.softmax(attn_scores, dim=1)  # (B, T, 1)
+        pooled = (attn_weights * trans_out).sum(dim=1)    # (B, d_model)
+
+        return self.classifier(pooled)            # (B, num_classes)
