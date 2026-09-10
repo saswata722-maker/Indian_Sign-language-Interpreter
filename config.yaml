@@ -39,7 +39,7 @@ training:
   label_smoothing: 0.1
   val_split: 0.2
   random_seed: 42
-  use_class_weights: true  # weight loss inversely to class frequency
+  use_class_weights: false  # A/B test: disabled to isolate effect on overall accuracy
   early_stopping_patience: 15
   early_stopping_min_delta: 0.001
   max_grad_norm: 1.0
