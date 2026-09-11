@@ -40,7 +40,7 @@ training:
   val_split: 0.2
   random_seed: 42
   use_class_weights: false  # A/B test: disabled to isolate effect on overall accuracy
-  early_stopping_patience: 15
+  early_stopping_patience: 30  # must exceed cosine-restart recovery dip (~15 epochs)
   early_stopping_min_delta: 0.001
   max_grad_norm: 1.0
   use_amp: true
