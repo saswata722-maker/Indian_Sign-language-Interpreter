@@ -80,6 +80,9 @@ class LandmarkExtractor:
             parts.append(norm(face).reshape(-1))
         parts.append(np.array([pose_ok, lh_ok, rh_ok], dtype=np.float32))
 
+        # Keep the raw result so callers can draw the skeleton overlay
+        self.last_result = res
+
         return np.concatenate(parts, axis=0)
 
     def extract_video(self, video_path):

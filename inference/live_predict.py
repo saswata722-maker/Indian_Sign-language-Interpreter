@@ -20,11 +20,16 @@ import collections
 import sys
 from pathlib import Path
 
+import mediapipe as mp
+
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from preprocessing.extract_landmarks import LandmarkExtractor
 from training.model import HybridSignModel
+
+mp_holistic = mp.solutions.holistic
+mp_drawing = mp.solutions.drawing_utils
 
 
 def run_live(model_path="models/best_model.pth", config_path="config.yaml",
@@ -112,12 +117,37 @@ def run_live(model_path="models/best_model.pth", config_path="config.yaml",
         if not ret:
             break
 
-        frame = cv2.flip(frame, 1)  # Mirror for natural interaction
         h, w, _ = frame.shape
 
-        # Extract features for current frame
+        # Extract features from the UNMIRRORED frame — mirror-flipping swaps
+        # MediaPipe's left/right hand labels vs. the (unmirrored) training
+        # videos, which silently corrupts the feature layout.
         feat = extractor.process_frame(frame)
         frame_buffer.append(feat)
+
+        # --- Skeleton overlay: show exactly what the camera is tracking ---
+        res = getattr(extractor, "last_result", None)
+        if res is not None:
+            spec = mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=2, circle_radius=2)
+            hand_spec = mp_drawing.DrawingSpec(color=(0, 200, 255), thickness=2, circle_radius=3)
+            if res.pose_landmarks:
+                mp_drawing.draw_landmarks(frame, res.pose_landmarks,
+                                          mp_holistic.POSE_CONNECTIONS, spec, spec)
+            if res.left_hand_landmarks:
+                mp_drawing.draw_landmarks(frame, res.left_hand_landmarks,
+                                          mp_holistic.HAND_CONNECTIONS, hand_spec, hand_spec)
+            if res.right_hand_landmarks:
+                mp_drawing.draw_landmarks(frame, res.right_hand_landmarks,
+                                          mp_holistic.HAND_CONNECTIONS, hand_spec, hand_spec)
+
+        # Tracking flags (last 3 features: pose, left hand, right hand)
+        flags = feat[-3:]
+        status = (f"Pose: {'OK' if flags[0] > 0.5 else '--'}   "
+                  f"L-Hand: {'OK' if flags[1] > 0.5 else '--'}   "
+                  f"R-Hand: {'OK' if flags[2] > 0.5 else '--'}")
+        status_color = (0, 255, 0) if (flags[1] > 0.5 or flags[2] > 0.5) else (0, 0, 255)
+        cv2.putText(frame, status, (20, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                    status_color, 2, cv2.LINE_AA)
 
         # Run inference once buffer is full
         if len(frame_buffer) == seq_len:
