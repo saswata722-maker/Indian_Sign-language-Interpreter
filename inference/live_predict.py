@@ -28,6 +28,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from preprocessing.extract_landmarks import LandmarkExtractor
 from training.model import HybridSignModel
 
+MIN_MOTION = 0.004  # mean |delta| of hand landmarks to count as 'signing'
+
 mp_holistic = mp.solutions.holistic
 mp_drawing = mp.solutions.drawing_utils
 
@@ -149,8 +151,27 @@ def run_live(model_path="models/best_model.pth", config_path="config.yaml",
         cv2.putText(frame, status, (20, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
                     status_color, 2, cv2.LINE_AA)
 
-        # Run inference once buffer is full
+        # Run inference once buffer is full, but only on windows that are
+        # actually a gesture: enough pose coverage and enough hand motion.
+        # Idle / pose-dropout windows otherwise yield confident garbage.
         if len(frame_buffer) == seq_len:
+            seq = np.array(frame_buffer, dtype=np.float32)
+
+            pose_cov = float((seq[:, -3] > 0.5).mean())
+            hand_cov = float(((seq[:, -2] > 0.5) | (seq[:, -1] > 0.5)).mean())
+            motion = float(np.abs(np.diff(seq[:, :228], axis=0)).mean())
+
+            gate_ok = (pose_cov >= 0.7 and hand_cov >= 0.5 and motion >= MIN_MOTION)
+            if not gate_ok:
+                current_label = ("Show hands & sign"
+                                 if hand_cov < 0.5 else "Waiting for motion...")
+                confidence = 0.0
+                last_probs = []
+                recent_preds.clear()
+                cv2.putText(frame, f"Gate: pose={pose_cov:.0%} hands={hand_cov:.0%} "
+                            f"motion={motion:.3f}", (20, 85),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 1, cv2.LINE_AA)
+        if len(frame_buffer) == seq_len and gate_ok:
             seq = np.array(frame_buffer, dtype=np.float32)
 
             # Append velocity (frame-to-frame deltas) to match training input
