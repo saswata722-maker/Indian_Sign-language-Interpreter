@@ -30,6 +30,9 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 import os
 
 
+MAX_POSE_STALE = 10  # frames before a held anchor is considered invalid
+
+
 class LandmarkExtractor:
     def __init__(self, include_face=False, model_complexity=1,
                  min_detection_confidence=0.5, min_tracking_confidence=0.5):
@@ -41,8 +44,13 @@ class LandmarkExtractor:
             min_detection_confidence=min_detection_confidence,
             min_tracking_confidence=min_tracking_confidence
         )
-        self.origin = np.zeros(3, dtype=np.float32)
-        self.scale = 1.0
+        # Fallback anchor used until the first valid pose is acquired. The
+        # previous zeros/1.0 default produced wildly out-of-distribution
+        # features on the first frames of a live stream.
+        self.origin = np.array([0.5, 0.5, 0.0], dtype=np.float32)
+        self.scale = 0.25
+        self.anchor_valid = False   # True once a real pose has locked on
+        self.pose_stale_frames = 0  # frames since the last valid pose
 
     def process_frame(self, frame_bgr):
         """Process a single BGR frame and return normalized landmark features."""
@@ -63,13 +71,22 @@ class LandmarkExtractor:
         lh_ok = res.left_hand_landmarks is not None
         rh_ok = res.right_hand_landmarks is not None
 
-        # Torso calibration (per-frame)
+        # Torso calibration (per-frame). On pose dropout we hold the last
+        # valid anchor for a short grace period rather than normalizing
+        # against a stale one indefinitely, and we track staleness so the
+        # caller can reject windows dominated by untracked frames.
         if pose_ok:
             ls, rs = pose[11], pose[12]
             width = float(np.linalg.norm(ls - rs))
             if width > 1e-3:
                 self.origin = (ls + rs) / 2.0
                 self.scale = width
+                self.anchor_valid = True
+                self.pose_stale_frames = 0
+        else:
+            self.pose_stale_frames += 1
+            if self.pose_stale_frames > MAX_POSE_STALE:
+                self.anchor_valid = False
 
         def norm(arr):
             return ((arr - self.origin) / self.scale).astype(np.float32)
