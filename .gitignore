@@ -44,3 +44,6 @@ desktop.ini
 # Live inference logs
 live_log.txt
 live_err.txt
+
+# Kilo config & plans
+.kilo/
