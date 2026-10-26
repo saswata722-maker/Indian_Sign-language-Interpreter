@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from preprocessing.extract_landmarks import LandmarkExtractor
 from training.model import HybridSignModel
+from training.dataset import resample_sequence
 
 MIN_MOTION = 0.004  # mean |delta| of hand landmarks to count as 'signing'
 
@@ -56,6 +57,14 @@ def run_live(model_path="models/best_model.pth", config_path="config.yaml",
     if threshold is None:
         threshold = config['inference']['confidence_threshold']
 
+    # Gate thresholds (filter non-signing windows). Made configurable so
+    # they can be tuned against logged rejection rates instead of hardcoded.
+    gate_cfg = config.get('inference', {}).get('gate', {})
+    gate_enabled = gate_cfg.get('enabled', True)
+    gate_pose = gate_cfg.get('min_pose_coverage', 0.6)
+    gate_hand = gate_cfg.get('min_hand_coverage', 0.4)
+    gate_motion = gate_cfg.get('min_motion', 0.003)
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Load model checkpoint
@@ -71,6 +80,15 @@ def run_live(model_path="models/best_model.pth", config_path="config.yaml",
         class_names = ["loud", "quiet", "happy", "sad",
                        "Beautiful", "Ugly", "Deaf", "Blind"]
         print("Warning: No class names found. Using defaults.")
+
+    # Fail fast on class-count mismatch. The 8-class fallback above would
+    # otherwise silently produce wrong predictions for a many-class checkpoint
+    # (e.g. 262 classes) instead of erroring.
+    ckpt_classes = len(checkpoint.get('class_to_idx', {}))
+    if ckpt_classes and len(class_names) != ckpt_classes:
+        raise RuntimeError(
+            f"Class count mismatch: checkpoint has {ckpt_classes} classes "
+            f"but {len(class_names)} class names were provided/resolved.")
 
     # Initialize model
     model = HybridSignModel(
@@ -151,30 +169,47 @@ def run_live(model_path="models/best_model.pth", config_path="config.yaml",
         cv2.putText(frame, status, (20, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
                     status_color, 2, cv2.LINE_AA)
 
-        # Run inference once buffer is full, but only on windows that are
-        # actually a gesture: enough pose coverage and enough hand motion.
-        # Idle / pose-dropout windows otherwise yield confident garbage.
+        # Run inference once the buffer is full AND the extractor has
+        # calibrated (anchor locked). Only windows that are actually a
+        # gesture (enough pose coverage + hand motion) are classified;
+        # idle / pose-dropout windows otherwise yield confident garbage.
+        gate_ok = False
         if len(frame_buffer) == seq_len:
-            seq = np.array(frame_buffer, dtype=np.float32)
+            raw = np.array(frame_buffer, dtype=np.float32)
 
-            pose_cov = float((seq[:, -3] > 0.5).mean())
-            hand_cov = float(((seq[:, -2] > 0.5) | (seq[:, -1] > 0.5)).mean())
-            motion = float(np.abs(np.diff(seq[:, :228], axis=0)).mean())
+            # Gate on the RAW window so detection coverage and motion
+            # keep their original (native-frame-rate) semantics.
+            pose_cov = float((raw[:, -3] > 0.5).mean())
+            hand_cov = float(((raw[:, -2] > 0.5) | (raw[:, -1] > 0.5)).mean())
+            motion = float(np.abs(np.diff(raw[:, :228], axis=0)).mean())
 
-            gate_ok = (pose_cov >= 0.7 and hand_cov >= 0.5 and motion >= MIN_MOTION)
+            calibrated = extractor.anchor_valid
+            gate_ok = calibrated and (
+                not gate_enabled or
+                (pose_cov >= gate_pose and hand_cov >= gate_hand and
+                 motion >= gate_motion))
+
             if not gate_ok:
-                current_label = ("Show hands & sign"
-                                 if hand_cov < 0.5 else "Waiting for motion...")
+                if not calibrated:
+                    current_label = "Calibrating..."
+                else:
+                    current_label = ("Show hands & sign"
+                                     if hand_cov < gate_hand else "Waiting for motion...")
                 confidence = 0.0
                 last_probs = []
                 recent_preds.clear()
-                cv2.putText(frame, f"Gate: pose={pose_cov:.0%} hands={hand_cov:.0%} "
-                            f"motion={motion:.3f}", (20, 85),
+                cv2.putText(frame, f"Gate: cal={int(calibrated)} pose={pose_cov:.0%} "
+                            f"hands={hand_cov:.0%} motion={motion:.3f}", (20, 85),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 1, cv2.LINE_AA)
-        if len(frame_buffer) == seq_len and gate_ok:
-            seq = np.array(frame_buffer, dtype=np.float32)
 
-            # Append velocity (frame-to-frame deltas) to match training input
+        if gate_ok:
+            # Match the training pipeline exactly: resample to the target
+            # sequence length FIRST, then append velocity (frame-to-frame
+            # deltas). Resampling is a no-op when the buffer length equals
+            # target_seq_len, but guarantees identical temporal normalization
+            # if the window size is ever changed.
+            seq = resample_sequence(raw, target_len=seq_len)
+
             use_velocity = model_config['preprocessing'].get('use_velocity', False)
             if use_velocity:
                 delta = np.diff(seq, axis=0, prepend=seq[:1])
@@ -224,8 +259,14 @@ def run_live(model_path="models/best_model.pth", config_path="config.yaml",
                     (255, 255, 0), 1, cv2.LINE_AA)
 
         cv2.imshow("Indian Sign Language Recognition (Live)", frame)
-        if cv2.waitKey(1) & 0xFF == ord('q'):
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('q'):
             break
+        elif key == ord('r'):
+            # Force recalibration of the normalization anchor
+            # (useful if the signer moves closer/farther mid-session).
+            extractor.reset_anchor()
+            print("Anchor reset — recalibrating...")
 
     cap.release()
     cv2.destroyAllWindows()
