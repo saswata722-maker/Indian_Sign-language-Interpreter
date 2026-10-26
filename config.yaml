@@ -50,3 +50,11 @@ inference:
   seq_len: 64              # sliding window length (matches training target_seq_len)
   confidence_threshold: 0.35  # 262-class softmax rarely exceeds 0.5; 0.35 is practical
   smoothing_window: 5      # majority vote over last N predictions
+  # Gate filters non-signing windows before classification.
+  # Tune against logged rejection rates (live_log.txt) if valid signs
+  # are being dropped (raise coverage) or garbage is being classified (lower).
+  gate:
+    enabled: true
+    min_pose_coverage: 0.6   # fraction of frames with pose detected
+    min_hand_coverage: 0.4   # fraction of frames with >=1 hand detected
+    min_motion: 0.003        # mean |delta| of landmarks to count as motion
