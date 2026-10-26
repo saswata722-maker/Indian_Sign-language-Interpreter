@@ -114,6 +114,18 @@ class LandmarkExtractor:
         cap.release()
         return np.stack(frames, axis=0) if frames else None
 
+    def reset_anchor(self):
+        """Force recalibration of the normalization anchor.
+
+        Resets to the default fallback values so the next valid pose
+        re-establishes the origin/scale. Useful in live sessions when
+        the signer moves closer/farther from the camera.
+        """
+        self.origin = np.array([0.5, 0.5, 0.0], dtype=np.float32)
+        self.scale = 0.25
+        self.anchor_valid = False
+        self.pose_stale_frames = 0
+
     def close(self):
         """Release MediaPipe resources."""
         self.mp_holistic.close()
