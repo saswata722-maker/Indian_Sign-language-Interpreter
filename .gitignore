@@ -19,8 +19,9 @@ extraction_log.txt
 training_log.txt
 
 # Model weights (large binaries; reproducible via training)
-models/
+# Commit best_model.pth for Render deployment (free tier, no paid disk)
 *.pth
+!models/best_model.pth
 *.pt
 *.onnx
 *.ckpt
