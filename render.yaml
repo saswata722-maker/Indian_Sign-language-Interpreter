@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: isl-sense
+    env: python
+    region: oregon
+    plan: starter
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "uvicorn api.main:app --host 0.0.0.0 --port $PORT --workers 1"
+    envVars:
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: PYTHONPATH
+        value: "."
+    # Disk for model weights (persistent across deploys/restarts)
+    # Upload models/best_model.pth to Render Disk or set MODEL_URL to download at startup
+    disk:
+      name: model-disk
+      mountPath: /opt/render/project/src/models
+      sizeGB: 1
