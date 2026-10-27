@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ISL-Sense — Live Sign Recognition</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0b0c10; color: #c5c6c7; padding: 20px; }
+  h1 { color: #66fcf1; margin-bottom: 16px; font-size: 1.5rem; }
+  .container { max-width: 900px; margin: 0 auto; }
+  .row { display: flex; gap: 20px; margin-bottom: 20px; }
+  .col { flex: 1; }
+  .card { background: #1f2833; border-radius: 12px; padding: 20px; margin-bottom: 20px; border: 1px solid #45a29e; }
+  .video-wrap { position: relative; width: 100%; max-width: 480px; background: #000; border-radius: 8px; overflow: hidden; }
+  video { width: 100%; display: block; }
+  canvas { display: none; }
+  .status { font-size: 0.85rem; margin-top: 8px; color: #45a29e; }
+  .badge { display: inline-block; padding: 4px 10px; border-radius: 4px; font-size: 0.75rem; font-weight: 600; margin-right: 8px; }
+  .badge-cal { background: #ffb703; color: #000; }
+  .badge-idle { background: #6c757d; color: #fff; }
+  .badge-pred { background: #2ed573; color: #000; }
+  .badge-buff { background: #ff9ff3; color: #000; }
+  .big-label { font-size: 2.5rem; font-weight: 700; color: #66fcf1; margin: 12px 0; }
+  .confidence { font-size: 1.2rem; color: #45a29e; margin-bottom: 16px; }
+  .top3 { margin-top: 16px; }
+  .top3-item { display: flex; align-items: center; gap: 12px; margin: 6px 0; font-size: 0.9rem; }
+  .top3-name { width: 120px; }
+  .top3-bar { flex: 1; height: 14px; background: #212529; border-radius: 7px; overflow: hidden; }
+  .top3-fill { height: 100%; background: linear-gradient(90deg, #66fcf1, #45a29e); width: 0%; transition: width 0.15s; }
+  .top3-val { width: 40px; text-align: right; font-family: monospace; }
+  .controls { display: flex; gap: 10px; align-items: center; margin-top: 16px; flex-wrap: wrap; }
+  button { background: #45a29e; color: #000; border: none; padding: 10px 20px; border-radius: 6px; font-weight: 600; cursor: pointer; }
+  button:hover { background: #66fcf1; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .meta { font-size: 0.8rem; color: #888; margin-top: 10px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-top: 12px; }
+  .metric { background: #16213e; padding: 10px; border-radius: 6px; }
+  .metric-label { font-size: 0.7rem; color: #888; text-transform: uppercase; letter-spacing: 0.05em; }
+  .metric-val { font-size: 1.1rem; font-weight: 600; color: #ffb703; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>ISL-Sense — Live Sign Recognition</h1>
+
+  <div class="row">
+    <div class="col">
+      <div class="card">
+        <div class="video-wrap">
+          <video id="webcam" autoplay playsinline muted></video>
+        </div>
+        <div class="controls">
+          <button id="startBtn" onclick="start()">Start Webcam</button>
+          <button id="resetBtn" onclick="resetAnchor()" disabled>Reset Anchor</button>
+        </div>
+        <div id="camStatus" class="status">Webcam not started</div>
+      </div>
+    </div>
+    <div class="col">
+      <div class="card">
+        <div id="statusBadge" class="badge badge-idle">Idle</div>
+        <div class="big-label" id="prediction">—</div>
+        <div class="confidence" id="confidence">0.0%</div>
+        <div class="meta" id="bufferInfo">Buffer: 0/64</div>
+        <div class="top3">
+          <div style="font-size:0.8rem;color:#888;margin-bottom:8px;">Top-3 guesses</div>
+          <div id="top3List">—</div>
+        </div>
+        <div class="grid">
+          <div class="metric"><div class="metric-label">Pose coverage</div><div class="metric-val" id="mPose">—</div></div>
+          <div class="metric"><div class="metric-label">Hand coverage</div><div class="metric-val" id="mHand">—</div></div>
+          <div class="metric"><div class="metric-label">Motion</div><div class="metric-val" id="mMotion">—</div></div>
+          <div class="metric"><div class="metric-label">Calibrated</div><div class="metric-val" id="mCal">—</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <p style="font-size:0.85rem;color:#888;">
+      <strong>How it works:</strong> Allow webcam access → frames are sent to the backend →
+      MediaPipe extracts landmarks → sliding window (64 frames) → resample → velocity → model inference.
+      The same pipeline as training (resample → diff → concat) is used, with anchor calibration,
+      coverage/motion gating, and temporal majority-vote debounce.
+    </p>
+  </div>
+</div>
+
+<canvas id="canvas" width="640" height="480"></canvas>
+
+<script>
+const API_BASE = window.location.origin;
+const clientId = "client-" + Math.random().toString(36).slice(2);
+const SEQ_LEN = 64;
+let streaming = false;
+let rafId = null;
+let lastSend = 0;
+const SEND_INTERVAL = 100; // ms between predictions
+
+const video = document.getElementById("webcam");
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+const startBtn = document.getElementById("startBtn");
+const resetBtn = document.getElementById("resetBtn");
+const camStatus = document.getElementById("camStatus");
+const statusBadge = document.getElementById("statusBadge");
+const predictionEl = document.getElementById("prediction");
+const confidenceEl = document.getElementById("confidence");
+const bufferInfo = document.getElementById("bufferInfo");
+const top3List = document.getElementById("top3List");
+const mPose = document.getElementById("mPose");
+const mHand = document.getElementById("mHand");
+const mMotion = document.getElementById("mMotion");
+const mCal = document.getElementById("mCal");
+
+async function start() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+    video.srcObject = stream;
+    await video.play();
+    streaming = true;
+    startBtn.disabled = true;
+    resetBtn.disabled = false;
+    camStatus.textContent = "Webcam active — sending frames...";
+    camStatus.className = "status";
+    loop();
+  } catch (err) {
+    camStatus.textContent = "Camera error: " + err.message;
+    camStatus.className = "status";
+    console.error(err);
+  }
+}
+
+function loop() {
+  if (!streaming) return;
+  drawFrame();
+  maybeSend();
+  rafId = requestAnimationFrame(loop);
+}
+
+function drawFrame() {
+  if (video.readyState < 2) return;
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  ctx.drawImage(video, 0, 0);
+}
+
+function maybeSend() {
+  const now = Date.now();
+  if (now - lastSend < SEND_INTERVAL) return;
+  lastSend = now;
+  sendFrame();
+}
+
+async function sendFrame() {
+  if (!streaming) return;
+  ctx.drawImage(video, 0, 0);
+  const b64 = canvas.toDataURL("image/jpeg", 0.7);
+
+  try {
+    const res = await fetch(API_BASE + "/predict", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ client_id: clientId, image_b64: b64 }),
+    });
+    const data = await res.json();
+    render(data);
+  } catch (err) {
+    console.error("Predict error:", err);
+  }
+}
+
+function render(data) {
+  statusBadge.textContent = (data.status || "idle").toUpperCase();
+  statusBadge.className = "badge " + badgeClass(data.status);
+  predictionEl.textContent = data.label || "—";
+  confidenceEl.textContent = (data.confidence * 100).toFixed(1) + "%";
+  bufferInfo.textContent = "Buffer: " + data.buffer_len + "/" + SEQ_LEN;
+
+  mPose.textContent = (data.pose_coverage * 100).toFixed(0) + "%";
+  mHand.textContent = (data.hand_coverage * 100).toFixed(0) + "%";
+  mMotion.textContent = data.motion ? data.motion.toFixed(3) : "—";
+  mCal.textContent = data.calibrated ? "Yes" : "No";
+
+  if (data.top3 && data.top3.length) {
+    top3List.innerHTML = data.top3.map(([name, prob]) => `
+      <div class="top3-item">
+        <div class="top3-name">${escapeHtml(name)}</div>
+        <div class="top3-bar"><div class="top3-fill" style="width:${(prob*100).toFixed(0)}%"></div></div>
+        <div class="top3-val">${(prob*100).toFixed(1)}%</div>
+      </div>
+    `).join("");
+  } else {
+    top3List.innerHTML = "<div style='color:#666;'>—</div>";
+  }
+}
+
+function badgeClass(status) {
+  switch (status) {
+    case "calibrating": return "badge-cal";
+    case "predicting": return "badge-pred";
+    case "buffering": return "badge-buff";
+    default: return "badge-idle";
+  }
+}
+
+function escapeHtml(t) {
+  const d = document.createElement("div");
+  d.textContent = t;
+  return d.innerHTML;
+}
+
+async function resetAnchor() {
+  try {
+    await fetch(API_BASE + "/reset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ client_id: clientId }),
+    });
+    camStatus.textContent = "Anchor reset — recalibrating...";
+  } catch (err) {
+    console.error("Reset error:", err);
+  }
+}
+
+// Stop stream on page unload
+window.addEventListener("beforeunload", () => {
+  streaming = false;
+  if (rafId) cancelAnimationFrame(rafId);
+  const stream = video.srcObject;
+  if (stream) {
+    stream.getTracks().forEach(t => t.stop());
+  }
+});
+</script>
+</body>
+</html>
