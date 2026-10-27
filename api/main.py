@@ -24,6 +24,7 @@ Endpoints:
 
 import base64
 import io
+import os
 import sys
 from collections import deque
 from pathlib import Path
@@ -49,25 +50,26 @@ from training.model import HybridSignModel
 # ---------------------------------------------------------------------------
 # Config & model loading (once at startup)
 # ---------------------------------------------------------------------------
-CONFIG_PATH = ROOT / "config.yaml"
-MODEL_PATH = ROOT / "models" / "best_model.pth"
+CONFIG_PATH = Path(os.environ.get("CONFIG_PATH", str(ROOT / "config.yaml")))
+MODEL_PATH = Path(os.environ.get("MODEL_PATH", str(ROOT / "models" / "best_model.pth")))
 
 with open(CONFIG_PATH, "r") as f:
     config = yaml.safe_load(f)
 
-SEQ_LEN = config["inference"]["seq_len"]
-CONFIDENCE_THRESHOLD = config["inference"]["confidence_threshold"]
-SMOOTHING_WINDOW = config["inference"]["smoothing_window"]
+SEQ_LEN = int(os.environ.get("SEQ_LEN", config["inference"]["seq_len"]))
+CONFIDENCE_THRESHOLD = float(os.environ.get("CONFIDENCE_THRESHOLD", config["inference"]["confidence_threshold"]))
+SMOOTHING_WINDOW = int(os.environ.get("SMOOTHING_WINDOW", config["inference"]["smoothing_window"]))
 
 gate_cfg = config.get("inference", {}).get("gate", {})
-GATE_ENABLED = gate_cfg.get("enabled", True)
-GATE_POSE = gate_cfg.get("min_pose_coverage", 0.6)
-GATE_HAND = gate_cfg.get("min_hand_coverage", 0.4)
-GATE_MOTION = gate_cfg.get("min_motion", 0.003)
+GATE_ENABLED = os.environ.get("GATE_ENABLED", str(gate_cfg.get("enabled", True))).lower() == "true"
+GATE_POSE = float(os.environ.get("GATE_MIN_POSE_COVERAGE", gate_cfg.get("min_pose_coverage", 0.6)))
+GATE_HAND = float(os.environ.get("GATE_MIN_HAND_COVERAGE", gate_cfg.get("min_hand_coverage", 0.4)))
+GATE_MOTION = float(os.environ.get("GATE_MIN_MOTION", gate_cfg.get("min_motion", 0.003)))
 
 USE_VELOCITY = config["preprocessing"].get("use_velocity", False)
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+use_cuda = os.environ.get("USE_CUDA", "false").lower() == "true" and torch.cuda.is_available()
+device = torch.device("cuda" if use_cuda else "cpu")
 
 checkpoint = torch.load(MODEL_PATH, map_location=device)
 model_config = checkpoint.get("config", config)
