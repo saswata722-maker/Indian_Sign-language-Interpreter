@@ -52,10 +52,12 @@ def evaluate_model(model_path, landmarks_dir="landmarks", config_path="config.ya
     files, labels, _ = load_dataset(landmarks_dir)
 
     # Create dataloader
+    use_velocity = config['preprocessing'].get('use_velocity', False)
     loader = DataLoader(
         ISLLandmarkDataset(files, labels,
                            target_len=config['preprocessing']['target_seq_len'],
-                           augment=False),
+                           augment=False,
+                           use_velocity=use_velocity),
         batch_size=config['training']['batch_size'],
         shuffle=False
     )
@@ -126,10 +128,12 @@ def evaluate_live_style(model_path, landmarks_dir="landmarks", config_path="conf
     model.eval()
 
     files, labels, _ = load_dataset(landmarks_dir)
+    use_velocity = config['preprocessing'].get('use_velocity', False)
     loader = DataLoader(
         ISLLandmarkDataset(files, labels,
                            target_len=config['preprocessing']['target_seq_len'],
-                           augment=False),
+                           augment=False,
+                           use_velocity=use_velocity),
         batch_size=config['training']['batch_size'],
         shuffle=False
     )
