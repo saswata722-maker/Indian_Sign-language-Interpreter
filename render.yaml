@@ -2,6 +2,7 @@ services:
   - type: web
     name: isl-sense
     env: python
+    pythonVersion: "3.12"
     region: oregon
     plan: starter
     buildCommand: "pip install -r requirements.txt"
@@ -27,9 +28,3 @@ services:
         value: "0.4"
       - key: GATE_MIN_MOTION
         value: "0.003"
-    # Disk for model weights (persistent across deploys/restarts)
-    # Upload models/best_model.pth to Render Disk or set MODEL_URL to download at startup
-    disk:
-      name: model-disk
-      mountPath: /opt/render/project/src/models
-      sizeGB: 1
