@@ -21,6 +21,7 @@ import sys
 from pathlib import Path
 
 import mediapipe as mp
+from mediapipe import solutions
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -31,8 +32,8 @@ from training.dataset import resample_sequence
 
 MIN_MOTION = 0.004  # mean |delta| of hand landmarks to count as 'signing'
 
-mp_holistic = mp.solutions.holistic
-mp_drawing = mp.solutions.drawing_utils
+mp_holistic = solutions.holistic
+mp_drawing = solutions.drawing_utils
 
 
 def run_live(model_path="models/best_model.pth", config_path="config.yaml",

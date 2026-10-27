@@ -24,6 +24,7 @@ across multiple worker processes for faster extraction.
 import cv2
 import numpy as np
 import mediapipe as mp
+from mediapipe import solutions
 from pathlib import Path
 from tqdm import tqdm
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -38,7 +39,7 @@ class LandmarkExtractor:
                  min_detection_confidence=0.5, min_tracking_confidence=0.5):
         """Initialize MediaPipe Holistic landmark extractor."""
         self.include_face = include_face
-        self.mp_holistic = mp.solutions.holistic.Holistic(
+        self.mp_holistic = solutions.holistic.Holistic(
             static_image_mode=False,
             model_complexity=model_complexity,
             min_detection_confidence=min_detection_confidence,
