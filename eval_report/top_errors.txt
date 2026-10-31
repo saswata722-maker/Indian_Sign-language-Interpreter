@@ -1,0 +1,31 @@
+Top misclassifications (count, true -> pred):
+     3  67. Sister -> 66. Brother
+     3  46. Clothing -> 38. Dress
+     2  91. new -> 95. bad
+     2  90. cool -> 43. she
+     2  83. Crowd -> 83. big large
+     2  80. Adult -> 81. Friend
+     2  74. Tomorrow -> 91. new
+     2  62. Parent -> 61. Father
+     2  53. Fan -> 83. Afternoon
+     2  43. she -> 90. cool
+     2  43. she -> 42. he
+     2  38. Dress -> 46. Clothing
+     2  33. Pencil -> 84. Evening
+     1  99. Job -> 61. Summer
+     1  96. wet -> 42. Paper
+     1  95. bad -> 81. Friend
+     1  94. Artist -> 61. Summer
+     1  89. warm -> 52. Good afternoon
+     1  88. cold -> 79. short
+     1  87. hot -> 27. Park
+     1  87. hot -> 14. Bus
+     1  87. Doctor -> 78. long
+     1  87. Doctor -> 3. Fish
+     1  85. slow -> 7. Horse
+     1  85. slow -> 3. Fish
+     1  84. small little -> 85. Student
+     1  82. narrow -> 40. Skirt
+     1  82. narrow -> 20. Street or Road
+     1  81. Second -> 4. Money
+     1  80. Minute -> 65. Woman

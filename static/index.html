@@ -52,6 +52,8 @@
         </div>
         <div class="controls">
           <button id="startBtn" onclick="start()">Start Webcam</button>
+          <button id="signBtn" onclick="toggleSign()" disabled>Record one sign</button>
+          <select id="mode"><option value="segment">One sign at a time</option><option value="stream">Continuous preview</option></select>
           <button id="resetBtn" onclick="resetAnchor()" disabled>Reset Anchor</button>
         </div>
         <div id="camStatus" class="status">Webcam not started</div>
@@ -62,7 +64,7 @@
         <div id="statusBadge" class="badge badge-idle">Idle</div>
         <div class="big-label" id="prediction">—</div>
         <div class="confidence" id="confidence">0.0%</div>
-        <div class="meta" id="bufferInfo">Buffer: 0/64</div>
+        <div class="meta" id="bufferInfo">Frames: 0</div>
         <div class="top3">
           <div style="font-size:0.8rem;color:#888;margin-bottom:8px;">Top-3 guesses</div>
           <div id="top3List">—</div>
@@ -90,149 +92,100 @@
 <canvas id="canvas" width="640" height="480"></canvas>
 
 <script>
-const API_BASE = window.location.origin;
-const clientId = "client-" + Math.random().toString(36).slice(2);
-const SEQ_LEN = 64;
-let streaming = false;
-let rafId = null;
-let lastSend = 0;
-const SEND_INTERVAL = 100; // ms between predictions
-
-const video = document.getElementById("webcam");
-const canvas = document.getElementById("canvas");
-const ctx = canvas.getContext("2d");
-const startBtn = document.getElementById("startBtn");
-const resetBtn = document.getElementById("resetBtn");
-const camStatus = document.getElementById("camStatus");
-const statusBadge = document.getElementById("statusBadge");
-const predictionEl = document.getElementById("prediction");
-const confidenceEl = document.getElementById("confidence");
-const bufferInfo = document.getElementById("bufferInfo");
-const top3List = document.getElementById("top3List");
-const mPose = document.getElementById("mPose");
-const mHand = document.getElementById("mHand");
-const mMotion = document.getElementById("mMotion");
-const mCal = document.getElementById("mCal");
-
+const video = document.getElementById('webcam');
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const clientId = 'client-' + crypto.randomUUID();
+let streaming = false, recording = false, finishing = false, busy = false, resetting = false;
+let frameId = 0, lastSend = 0, segmentStart = 0;
+const modeEl = document.getElementById('mode');
+async function resetAnchor() {
+  if (resetting) return;
+  resetting = true;
+  while (busy) await new Promise(r => setTimeout(r, 20));
+  busy = true;
+  recording = finishing = false;
+  try {
+    const res = await fetch('/reset', {method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({client_id:clientId})});
+    if (!res.ok) throw new Error(await res.text());
+    render({label:'Ready', confidence:0, buffer_len:0, status:'ready', top3:[],
+      pose_coverage:0, hand_coverage:0, motion:0, calibrated:false});
+  } catch (err) { document.getElementById('camStatus').textContent = err.message; }
+  finally { busy = false; resetting = false; document.getElementById('signBtn').textContent = 'Record one sign'; }
+}
+modeEl.onchange = async () => {
+  // Wait for the in-flight frame before resetting; never race reset with predict.
+  modeEl.disabled = true;
+  while (busy) await new Promise(r => setTimeout(r, 20));
+  await resetAnchor();
+  modeEl.disabled = false;
+  document.getElementById('signBtn').disabled = !streaming || modeEl.value !== 'segment';
+};
+async function toggleSign() {
+  if (recording) { finishing = true; return; }
+  if (busy) return;
+  await resetAnchor();
+  recording = true; segmentStart = performance.now();
+  document.getElementById('signBtn').textContent = 'Finish sign';
+}
 async function start() {
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
-    video.srcObject = stream;
+    video.srcObject = await navigator.mediaDevices.getUserMedia({
+      video:{facingMode:'user', width:{ideal:640}, height:{ideal:480}, frameRate:{ideal:25}}});
     await video.play();
     streaming = true;
-    startBtn.disabled = true;
-    resetBtn.disabled = false;
-    camStatus.textContent = "Webcam active — sending frames...";
-    camStatus.className = "status";
-    loop();
-  } catch (err) {
-    camStatus.textContent = "Camera error: " + err.message;
-    camStatus.className = "status";
-    console.error(err);
-  }
+    document.getElementById('startBtn').disabled = true;
+    document.getElementById('resetBtn').disabled = false;
+    document.getElementById('signBtn').disabled = modeEl.value !== 'segment';
+    document.getElementById('camStatus').textContent = 'Ready: record one complete sign';
+    requestAnimationFrame(loop);
+  } catch (err) { document.getElementById('camStatus').textContent = err.message; }
 }
-
 function loop() {
   if (!streaming) return;
-  drawFrame();
-  maybeSend();
-  rafId = requestAnimationFrame(loop);
+  const now = performance.now();
+  if (!busy && !resetting && !modeEl.disabled && video.readyState >= 2 &&
+      (recording || modeEl.value === 'stream') && now-lastSend >= 40) {
+    lastSend = now;
+    sendFrame(now);
+  }
+  requestAnimationFrame(loop);
 }
-
-function drawFrame() {
-  if (video.readyState < 2) return;
-  canvas.width = video.videoWidth;
-  canvas.height = video.videoHeight;
+async function sendFrame(now) {
+  busy = true;
+  const mode = modeEl.value;
+  const finalize = mode === 'segment' && (finishing || now-segmentStart >= 7500);
+  canvas.width = video.videoWidth; canvas.height = video.videoHeight;
   ctx.drawImage(video, 0, 0);
-}
-
-function maybeSend() {
-  const now = Date.now();
-  if (now - lastSend < SEND_INTERVAL) return;
-  lastSend = now;
-  sendFrame();
-}
-
-async function sendFrame() {
-  if (!streaming) return;
-  ctx.drawImage(video, 0, 0);
-  const b64 = canvas.toDataURL("image/jpeg", 0.7);
-
   try {
-    const res = await fetch(API_BASE + "/predict", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ client_id: clientId, image_b64: b64 }),
-    });
-    const data = await res.json();
-    render(data);
-  } catch (err) {
-    console.error("Predict error:", err);
+    const res = await fetch('/predict', {method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({client_id:clientId, frame_id:frameId++, timestamp:now/1000,
+        mode, finalize, image_b64:canvas.toDataURL('image/jpeg', .85)})});
+    if (!res.ok) throw new Error(await res.text());
+    render(await res.json());
+  } catch (err) { document.getElementById('camStatus').textContent = err.message; }
+  finally {
+    busy = false;
+    if (finalize) {
+      recording = finishing = false;
+      document.getElementById('signBtn').textContent = 'Record one sign';
+    }
   }
 }
-
 function render(data) {
-  statusBadge.textContent = (data.status || "idle").toUpperCase();
-  statusBadge.className = "badge " + badgeClass(data.status);
-  predictionEl.textContent = data.label || "—";
-  confidenceEl.textContent = (data.confidence * 100).toFixed(1) + "%";
-  bufferInfo.textContent = "Buffer: " + data.buffer_len + "/" + SEQ_LEN;
-
-  mPose.textContent = (data.pose_coverage * 100).toFixed(0) + "%";
-  mHand.textContent = (data.hand_coverage * 100).toFixed(0) + "%";
-  mMotion.textContent = data.motion ? data.motion.toFixed(3) : "—";
-  mCal.textContent = data.calibrated ? "Yes" : "No";
-
-  if (data.top3 && data.top3.length) {
-    top3List.innerHTML = data.top3.map(([name, prob]) => `
-      <div class="top3-item">
-        <div class="top3-name">${escapeHtml(name)}</div>
-        <div class="top3-bar"><div class="top3-fill" style="width:${(prob*100).toFixed(0)}%"></div></div>
-        <div class="top3-val">${(prob*100).toFixed(1)}%</div>
-      </div>
-    `).join("");
-  } else {
-    top3List.innerHTML = "<div style='color:#666;'>—</div>";
-  }
+  document.getElementById('prediction').textContent = data.label;
+  document.getElementById('confidence').textContent = data.confidence ? (100*data.confidence).toFixed(1)+'%' : '';
+  document.getElementById('bufferInfo').textContent = 'Frames: '+data.buffer_len;
+  document.getElementById('statusBadge').textContent = data.status.toUpperCase();
+  document.getElementById('top3List').replaceChildren(...data.top3.map(([name,p]) => {
+    const li = document.createElement('div'); li.textContent = name+' '+(100*p).toFixed(1)+'%'; return li;
+  }));
+  document.getElementById('mPose').textContent = (100*data.pose_coverage).toFixed(0)+'%';
+  document.getElementById('mHand').textContent = (100*data.hand_coverage).toFixed(0)+'%';
+  document.getElementById('mMotion').textContent = data.motion.toFixed(4);
+  document.getElementById('mCal').textContent = data.calibrated ? 'Yes' : 'No';
 }
-
-function badgeClass(status) {
-  switch (status) {
-    case "calibrating": return "badge-cal";
-    case "predicting": return "badge-pred";
-    case "buffering": return "badge-buff";
-    default: return "badge-idle";
-  }
-}
-
-function escapeHtml(t) {
-  const d = document.createElement("div");
-  d.textContent = t;
-  return d.innerHTML;
-}
-
-async function resetAnchor() {
-  try {
-    await fetch(API_BASE + "/reset", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ client_id: clientId }),
-    });
-    camStatus.textContent = "Anchor reset — recalibrating...";
-  } catch (err) {
-    console.error("Reset error:", err);
-  }
-}
-
-// Stop stream on page unload
-window.addEventListener("beforeunload", () => {
-  streaming = false;
-  if (rafId) cancelAnimationFrame(rafId);
-  const stream = video.srcObject;
-  if (stream) {
-    stream.getTracks().forEach(t => t.stop());
-  }
-});
 </script>
 </body>
 </html>

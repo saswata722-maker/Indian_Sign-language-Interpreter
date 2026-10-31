@@ -1,0 +1,27 @@
+{
+  "protocol": "isolated held-out clip replay; final window only",
+  "split": "val",
+  "fps": 10.0,
+  "count": 2,
+  "clip_accuracy": 1.0,
+  "stream_effective_accuracy": 0.5,
+  "stream_rejection_rate": 0.5,
+  "rows": [
+    {
+      "video": "raw_data\\Days_and_Time_1of3\\Days_and_Time\\71. Friday\\MVI_5026.MOV",
+      "true": "71. Friday",
+      "frames": 20,
+      "clip_prediction": "71. Friday",
+      "stream_prediction": "Waiting for gesture...",
+      "stream_status": "buffering"
+    },
+    {
+      "video": "raw_data\\Jobs_1of2\\Jobs\\85. Student\\MVI_4465.MOV",
+      "true": "85. Student",
+      "frames": 30,
+      "clip_prediction": "85. Student",
+      "stream_prediction": "85. Student",
+      "stream_status": "predicting"
+    }
+  ]
+}

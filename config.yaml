@@ -4,18 +4,19 @@
 # Paths
 raw_data_dir: "raw_data"
 landmarks_dir: "landmarks"
-model_save_dir: "models"
+model_save_dir: "models_v2" # Keep the shipped legacy checkpoint intact
 logs_dir: "logs"
 
 # Landmark extraction
 extraction:
-  include_face: false      # false = 234 dims (recommended), true = 1632 dims
+  include_face: false      # false = 228 dims (recommended), true = 1632 dims
   model_complexity: 1      # 0=light, 1=full, 2=heavy
   min_detection_confidence: 0.5
   min_tracking_confidence: 0.5
 
 # Preprocessing
 preprocessing:
+  feature_version: 2      # new training only; inference follows checkpoint version
   target_seq_len: 64       # frames per sequence (matches ~66 frame mean)
   temporal_jitter: 0.15    # ±15% speed augmentation
   spatial_noise: 0.01      # Gaussian noise std
@@ -32,6 +33,8 @@ model:
 
 # Training
 training:
+  splits_path: "splits.json"
+  test_split: 0.15
   num_epochs: 80
   batch_size: 16
   learning_rate: 0.001
@@ -47,14 +50,20 @@ training:
 
 # Inference
 inference:
-  seq_len: 64              # sliding window length (matches training target_seq_len)
-  confidence_threshold: 0.35  # 262-class softmax rarely exceeds 0.5; 0.35 is practical
-  smoothing_window: 5      # majority vote over last N predictions
+  window_seconds: 2.56
+  max_frame_gap_seconds: 1.0
+  min_frames: 8
+  max_buffer_frames: 256
+  max_segment_seconds: 8
+  prediction_ttl_seconds: 1.0
+  seq_len: 64              # legacy tooling only; live windows use capture timestamps
+  confidence_threshold: 0.35  # starting point; calibrate on webcam validation data
+  smoothing_window: 5      # average probability vectors over recent predictions
   # Gate filters non-signing windows before classification.
-  # Tune against logged rejection rates (live_log.txt) if valid signs
-  # are being dropped (raise coverage) or garbage is being classified (lower).
+  # Tune on validation recordings. Raising coverage requirements rejects MORE
+  # windows. The new motion statistic requires recalibration on webcam data.
   gate:
     enabled: true
     min_pose_coverage: 0.6   # fraction of frames with pose detected
     min_hand_coverage: 0.4   # fraction of frames with >=1 hand detected
-    min_motion: 0.003        # mean |delta| of landmarks to count as motion
+    min_motion: 0.003        # valid hand XY motion per reference 25-FPS step
