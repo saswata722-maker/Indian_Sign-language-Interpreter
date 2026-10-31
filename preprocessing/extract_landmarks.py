@@ -14,7 +14,7 @@ Applies torso-centered & scale-invariant normalization:
   - Scale: shoulder Euclidean distance ||left_shoulder - right_shoulder||
 
 Output: .npy files with shape (T_frames, feature_dim) float32
-  - include_feature=False → 234 dims (recommended for training/live)
+  - include_face=False → 228 dims (recommended for training/live)
   - include_face=True → 1632 dims (research, subtle facial expressions)
 
 Multiprocessing support: uses ProcessPoolExecutor to distribute videos
@@ -36,9 +36,10 @@ MAX_POSE_STALE = 10  # frames before a held anchor is considered invalid
 
 class LandmarkExtractor:
     def __init__(self, include_face=False, model_complexity=1,
-                 min_detection_confidence=0.5, min_tracking_confidence=0.5):
+                 min_detection_confidence=0.5, min_tracking_confidence=0.5, feature_version=1):
         """Initialize MediaPipe Holistic landmark extractor."""
         self.include_face = include_face
+        self.feature_version = feature_version
         self.mp_holistic = solutions.holistic.Holistic(
             static_image_mode=False,
             model_complexity=model_complexity,
@@ -101,10 +102,16 @@ class LandmarkExtractor:
         # Keep the raw result so callers can draw the skeleton overlay
         self.last_result = res
 
-        return np.concatenate(parts, axis=0)
+        features = np.concatenate(parts, axis=0)
+        if self.feature_version == 2:
+            from preprocessing.features import mask_missing
+            features = mask_missing(features[None])[0]
+        return features
 
     def extract_video(self, video_path):
         """Extract landmark sequence from a video file."""
+        self.reset_anchor()
+        self.mp_holistic.reset()
         cap = cv2.VideoCapture(str(video_path))
         frames = []
         while cap.isOpened():
@@ -136,14 +143,15 @@ class LandmarkExtractor:
 _worker_extractor = None
 
 
-def _worker_init(include_face, model_complexity, min_detection_confidence, min_tracking_confidence):
+def _worker_init(include_face, model_complexity, min_detection_confidence, min_tracking_confidence, feature_version):
     """Initialize a LandmarkExtractor instance for each worker process."""
     global _worker_extractor
     _worker_extractor = LandmarkExtractor(
         include_face=include_face,
         model_complexity=model_complexity,
         min_detection_confidence=min_detection_confidence,
-        min_tracking_confidence=min_tracking_confidence
+        min_tracking_confidence=min_tracking_confidence,
+        feature_version=feature_version
     )
 
 
@@ -175,17 +183,17 @@ def _worker_process_video(args):
 
 def batch_extract(raw_root="raw_data", save_root="landmarks", include_face=False,
                   model_complexity=1, min_detection_confidence=0.5,
-                  min_tracking_confidence=0.5, num_workers=None):
+                  min_tracking_confidence=0.5, num_workers=None, feature_version=1):
     """Batch-process all videos and save .npy files using multiprocessing."""
     raw_path = Path(raw_root)
     save_path = Path(save_root)
 
-    video_files = sorted(
+    video_files = sorted(set(
         list(raw_path.rglob("*.MOV"))
         + list(raw_path.rglob("*.mp4"))
         + list(raw_path.rglob("*.mov"))
         + list(raw_path.rglob("*.MP4"))
-    )
+    ))
 
     # Filter out already-processed videos
     videos_to_process = []
@@ -219,7 +227,7 @@ def batch_extract(raw_root="raw_data", save_root="landmarks", include_face=False
         max_workers=num_workers,
         initializer=_worker_init,
         initargs=(include_face, model_complexity,
-                  min_detection_confidence, min_tracking_confidence)
+                  min_detection_confidence, min_tracking_confidence, feature_version)
     ) as executor:
         futures = {
             executor.submit(_worker_process_video, args): args
@@ -243,4 +251,15 @@ def batch_extract(raw_root="raw_data", save_root="landmarks", include_face=False
 
 
 if __name__ == "__main__":
-    batch_extract(raw_root="raw_data", save_root="landmarks", include_face=False)
+    import argparse
+    import yaml
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--config', default='config.yaml')
+    parser.add_argument('--output', default='landmarks_v2', help='Use a fresh directory to avoid stale cached features')
+    parser.add_argument('--workers', type=int, default=None)
+    args = parser.parse_args()
+    with open(args.config) as f:
+        cfg = yaml.safe_load(f)
+    batch_extract(raw_root=cfg['raw_data_dir'], save_root=args.output,
+                  num_workers=args.workers, **cfg['extraction'],
+                  feature_version=cfg['preprocessing'].get('feature_version', 1))
