@@ -48,3 +48,7 @@ live_err.txt
 
 # Kilo config & plans
 .kilo/
+
+# Generated eval artifacts
+eval_report/
+replay_check.json
