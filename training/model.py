@@ -20,7 +20,7 @@ class HybridSignModel(nn.Module):
     4. Classification: Mean pooling → LayerNorm → Dropout → Linear
 
     Args:
-        input_dim: Feature dimension per frame (234 for pose+hands+flags).
+        input_dim: Feature dimension per frame (228 raw; 456 with velocity).
         num_classes: Number of sign classes.
         d_model: Transformer embedding dimension.
         nhead: Number of attention heads.
@@ -28,7 +28,7 @@ class HybridSignModel(nn.Module):
         dropout: Dropout probability.
     """
 
-    def __init__(self, input_dim=234, num_classes=8, d_model=128, nhead=4,
+    def __init__(self, input_dim=228, num_classes=8, d_model=128, nhead=4,
                  num_transformer_layers=2, dropout=0.2):
         super().__init__()
         self.input_proj = nn.Linear(input_dim, d_model)

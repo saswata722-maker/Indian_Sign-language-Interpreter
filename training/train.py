@@ -14,6 +14,9 @@ Features:
 """
 
 import torch
+import json
+import random
+import numpy as np
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from pathlib import Path
@@ -28,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from training.dataset import ISLLandmarkDataset, load_dataset
 from training.model import HybridSignModel
+from utils.make_splits import make_splits, validate_splits
 
 def train_isl(landmarks_dir="landmarks", config_path="config.yaml"):
     """
@@ -46,27 +50,40 @@ def train_isl(landmarks_dir="landmarks", config_path="config.yaml"):
         print("No landmark files found! Run preprocessing/extract_landmarks.py first.")
         return
 
-    # Stratified train/validation split
-    train_f, val_f, train_l, val_l = train_test_split(
-        files, labels,
-        test_size=config['training']['val_split'],
-        stratify=labels,
-        random_state=config['training']['random_seed']
-    )
+    seed = config['training']['random_seed']
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    split_path = Path(config['training'].get('splits_path', 'splits.json'))
+    if split_path.exists():
+        splits = validate_splits(json.loads(split_path.read_text()))
+    else:
+        splits = make_splits(landmarks_dir,
+            val_split=config['training']['val_split'],
+            test_split=config['training'].get('test_split', .15),
+            random_seed=seed, output_file=split_path,
+            groups_file=config['training'].get('groups_file'))
+    if splits['class_to_idx'] != class_to_idx:
+        raise ValueError('Saved splits do not match dataset classes')
+    train_f = [Path(landmarks_dir)/p for p in splits['train']['files']]
+    val_f = [Path(landmarks_dir)/p for p in splits['val']['files']]
+    train_l, val_l = splits['train']['labels'], splits['val']['labels']
     print(f"Train: {len(train_f)}, Validation: {len(val_f)}")
 
     use_velocity = config['preprocessing'].get('use_velocity', False)
     train_loader = DataLoader(
         ISLLandmarkDataset(train_f, train_l,
                            target_len=config['preprocessing']['target_seq_len'],
-                           augment=True, use_velocity=use_velocity),
+                           augment=True, use_velocity=use_velocity,
+                           feature_version=config['preprocessing'].get('feature_version', 1)),
         batch_size=config['training']['batch_size'],
         shuffle=True, num_workers=0, pin_memory=True
     )
     val_loader = DataLoader(
         ISLLandmarkDataset(val_f, val_l,
                            target_len=config['preprocessing']['target_seq_len'],
-                           augment=False, use_velocity=use_velocity),
+                           augment=False, use_velocity=use_velocity,
+                           feature_version=config['preprocessing'].get('feature_version', 1)),
         batch_size=config['training']['batch_size'],
         shuffle=False, num_workers=0, pin_memory=True
     )
@@ -93,7 +110,6 @@ def train_isl(landmarks_dir="landmarks", config_path="config.yaml"):
     # Loss (with optional class weighting for imbalanced classes)
     label_smoothing = config['training']['label_smoothing']
     if config['training'].get('use_class_weights', False):
-        import numpy as np
         counts = np.bincount(train_l, minlength=len(class_to_idx))
         weights = len(train_l) / (len(class_to_idx) * np.maximum(counts, 1))
         weights = torch.tensor(weights, dtype=torch.float32).to(device)
@@ -200,6 +216,7 @@ def train_isl(landmarks_dir="landmarks", config_path="config.yaml"):
                 'train_acc': train_acc,
                 'class_to_idx': class_to_idx,
                 'config': config,
+                'splits': splits,
             }, model_save_dir / "best_model.pth")
             print(f"  -> Saved best model (val_acc: {val_acc*100:.1f}%)")
         else:
@@ -218,6 +235,7 @@ def train_isl(landmarks_dir="landmarks", config_path="config.yaml"):
                 'val_acc': val_acc,
                 'class_to_idx': class_to_idx,
                 'config': config,
+                'splits': splits,
             }, model_save_dir / f"checkpoint_epoch_{epoch}.pth")
 
     elapsed_total = time.time() - start_time
@@ -228,5 +246,11 @@ def train_isl(landmarks_dir="landmarks", config_path="config.yaml"):
 
 
 if __name__ == "__main__":
-    train_isl("landmarks", "config.yaml")
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--config', default='config.yaml')
+    args = parser.parse_args()
+    with open(args.config) as f:
+        settings = yaml.safe_load(f)
+    train_isl(settings['landmarks_dir'], args.config)
 
