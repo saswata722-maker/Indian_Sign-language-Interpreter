@@ -1,279 +1,88 @@
-"""
-Real-Time Webcam Inference Module
-Connects to webcam, extracts landmarks in real-time, and recognizes ISL gestures.
-
-Pipeline:
-  1. Capture frame from webcam
-  2. Extract normalized landmark features via MediaPipe
-  3. Buffer frames in a sliding window (deque)
-  4. Run model inference when buffer is full
-  5. Temporal debounce: majority vote over recent predictions
-  6. Render recognized sign as subtitle overlay
-
-Based on AI4Bharat OpenHands live inference approach.
-"""
-
-import cv2
-import numpy as np
-import torch
-import collections
+"""Webcam recognition: SPACE starts/finishes one sign; S toggles streaming."""
 import sys
+import time
 from pathlib import Path
-
-import mediapipe as mp
-from mediapipe import solutions
-
-# Add project root to path
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from preprocessing.extract_landmarks import LandmarkExtractor
-from training.model import HybridSignModel
-from training.dataset import resample_sequence
-
-MIN_MOTION = 0.004  # mean |delta| of hand landmarks to count as 'signing'
-
-mp_holistic = solutions.holistic
-mp_drawing = solutions.drawing_utils
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import cv2
+import torch
+import yaml
+from inference.runtime import Predictor, StreamState
 
 
-def run_live(model_path="models/best_model.pth", config_path="config.yaml",
+def run_live(model_path='models/best_model.pth', config_path='config.yaml',
              class_names=None, seq_len=None, threshold=None):
-    """
-    Run live ISL recognition from webcam.
-
-    Args:
-        model_path: Path to trained model checkpoint.
-        config_path: Path to configuration YAML file.
-        class_names: List of class names (overrides checkpoint class names).
-        seq_len: Sliding window length (defaults to config inference.seq_len).
-        threshold: Minimum confidence to accept a prediction.
-    """
-    # Load config
-    import yaml
-    with open(config_path, 'r') as f:
+    with open(config_path) as f:
         config = yaml.safe_load(f)
-
-    if seq_len is None:
-        seq_len = config['inference']['seq_len']
-    if threshold is None:
-        threshold = config['inference']['confidence_threshold']
-
-    # Gate thresholds (filter non-signing windows). Made configurable so
-    # they can be tuned against logged rejection rates instead of hardcoded.
-    gate_cfg = config.get('inference', {}).get('gate', {})
-    gate_enabled = gate_cfg.get('enabled', True)
-    gate_pose = gate_cfg.get('min_pose_coverage', 0.6)
-    gate_hand = gate_cfg.get('min_hand_coverage', 0.4)
-    gate_motion = gate_cfg.get('min_motion', 0.003)
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    # Load model checkpoint
-    checkpoint = torch.load(model_path, map_location=device)
-    model_config = checkpoint.get('config', config)
-
-    # Determine class names
-    if class_names is None and 'class_to_idx' in checkpoint:
-        idx_to_class = {v: k for k, v in checkpoint['class_to_idx'].items()}
-        class_names = [idx_to_class[i] for i in range(len(idx_to_class))]
-
-    if class_names is None:
-        class_names = ["loud", "quiet", "happy", "sad",
-                       "Beautiful", "Ugly", "Deaf", "Blind"]
-        print("Warning: No class names found. Using defaults.")
-
-    # Fail fast on class-count mismatch. The 8-class fallback above would
-    # otherwise silently produce wrong predictions for a many-class checkpoint
-    # (e.g. 262 classes) instead of erroring.
-    ckpt_classes = len(checkpoint.get('class_to_idx', {}))
-    if ckpt_classes and len(class_names) != ckpt_classes:
-        raise RuntimeError(
-            f"Class count mismatch: checkpoint has {ckpt_classes} classes "
-            f"but {len(class_names)} class names were provided/resolved.")
-
-    # Initialize model
-    model = HybridSignModel(
-        input_dim=model_config['model']['input_dim'],
-        num_classes=len(class_names),
-        d_model=model_config['model']['d_model'],
-        nhead=model_config['model']['nhead'],
-        num_transformer_layers=model_config['model']['num_transformer_layers'],
-        dropout=model_config['model']['dropout']
-    ).to(device)
-    model.load_state_dict(checkpoint['model_state_dict'])
-    model.eval()
-
-    # Initialize extractor
-    extractor = LandmarkExtractor(
-        include_face=config['extraction']['include_face'],
-        model_complexity=config['extraction']['model_complexity'],
-        min_detection_confidence=config['extraction']['min_detection_confidence'],
-        min_tracking_confidence=config['extraction']['min_tracking_confidence']
-    )
-
-    # Webcam
+    predictor = Predictor(model_path, config, 'cuda' if torch.cuda.is_available() else 'cpu')
+    if class_names is not None and list(class_names) != predictor.names:
+        raise ValueError('Class order must match the checkpoint')
+    inf = dict(config['inference'])
+    if threshold is not None:
+        inf['confidence_threshold'] = threshold
+    if seq_len is not None:
+        inf['window_seconds'] = seq_len/25.0
+    state = StreamState(predictor, inf)
+    extractor = predictor.make_extractor()
+    from mediapipe import solutions
     cap = cv2.VideoCapture(0)
-    if not cap.isOpened():
-        print("Error: Could not open webcam.")
-        return
-
-    # Buffers
-    frame_buffer = collections.deque(maxlen=seq_len)
-    recent_preds = collections.deque(maxlen=config['inference']['smoothing_window'])
-    current_label = "Waiting for gesture..."
-    confidence = 0.0
-    last_probs = []  # top-3 (name, prob) for on-screen display
-
-    print("=" * 50)
-    print("ISL-Sense Live Recognition")
-    print("=" * 50)
-    print(f"Classes: {class_names}")
-    print(f"Window size: {seq_len} frames")
-    print(f"Confidence threshold: {threshold}")
-    print("Press 'q' to quit.")
-    print("=" * 50)
-
-    while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret:
-            break
-
-        h, w, _ = frame.shape
-
-        # Extract features from the UNMIRRORED frame — mirror-flipping swaps
-        # MediaPipe's left/right hand labels vs. the (unmirrored) training
-        # videos, which silently corrupts the feature layout.
-        feat = extractor.process_frame(frame)
-        frame_buffer.append(feat)
-
-        # --- Skeleton overlay: show exactly what the camera is tracking ---
-        res = getattr(extractor, "last_result", None)
-        if res is not None:
-            spec = mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=2, circle_radius=2)
-            hand_spec = mp_drawing.DrawingSpec(color=(0, 200, 255), thickness=2, circle_radius=3)
-            if res.pose_landmarks:
-                mp_drawing.draw_landmarks(frame, res.pose_landmarks,
-                                          mp_holistic.POSE_CONNECTIONS, spec, spec)
-            if res.left_hand_landmarks:
-                mp_drawing.draw_landmarks(frame, res.left_hand_landmarks,
-                                          mp_holistic.HAND_CONNECTIONS, hand_spec, hand_spec)
-            if res.right_hand_landmarks:
-                mp_drawing.draw_landmarks(frame, res.right_hand_landmarks,
-                                          mp_holistic.HAND_CONNECTIONS, hand_spec, hand_spec)
-
-        # Tracking flags (last 3 features: pose, left hand, right hand)
-        flags = feat[-3:]
-        status = (f"Pose: {'OK' if flags[0] > 0.5 else '--'}   "
-                  f"L-Hand: {'OK' if flags[1] > 0.5 else '--'}   "
-                  f"R-Hand: {'OK' if flags[2] > 0.5 else '--'}")
-        status_color = (0, 255, 0) if (flags[1] > 0.5 or flags[2] > 0.5) else (0, 0, 255)
-        cv2.putText(frame, status, (20, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
-                    status_color, 2, cv2.LINE_AA)
-
-        # Run inference once the buffer is full AND the extractor has
-        # calibrated (anchor locked). Only windows that are actually a
-        # gesture (enough pose coverage + hand motion) are classified;
-        # idle / pose-dropout windows otherwise yield confident garbage.
-        gate_ok = False
-        if len(frame_buffer) == seq_len:
-            raw = np.array(frame_buffer, dtype=np.float32)
-
-            # Gate on the RAW window so detection coverage and motion
-            # keep their original (native-frame-rate) semantics.
-            pose_cov = float((raw[:, -3] > 0.5).mean())
-            hand_cov = float(((raw[:, -2] > 0.5) | (raw[:, -1] > 0.5)).mean())
-            motion = float(np.abs(np.diff(raw[:, :228], axis=0)).mean())
-
-            calibrated = extractor.anchor_valid
-            gate_ok = calibrated and (
-                not gate_enabled or
-                (pose_cov >= gate_pose and hand_cov >= gate_hand and
-                 motion >= gate_motion))
-
-            if not gate_ok:
-                if not calibrated:
-                    current_label = "Calibrating..."
+    mode, recording = 'segment', False
+    result = state.result('ready', 'Press SPACE to record one sign')
+    try:
+        if not cap.isOpened():
+            raise RuntimeError('Could not open webcam')
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            timestamp = time.monotonic()
+            key = cv2.waitKey(1) & 0xff
+            if key == ord('q'):
+                break
+            finalize = False
+            if key in (ord('r'), ord('s')):
+                state.reset()
+                extractor.reset_anchor()
+                extractor.mp_holistic.reset()
+                recording = False
+                if key == ord('s'):
+                    mode = 'stream' if mode == 'segment' else 'segment'
+                result = state.result('ready', 'Ready')
+            if key == ord(' ') and mode == 'segment':
+                if recording:
+                    finalize = True
                 else:
-                    current_label = ("Show hands & sign"
-                                     if hand_cov < gate_hand else "Waiting for motion...")
-                confidence = 0.0
-                last_probs = []
-                recent_preds.clear()
-                cv2.putText(frame, f"Gate: cal={int(calibrated)} pose={pose_cov:.0%} "
-                            f"hands={hand_cov:.0%} motion={motion:.3f}", (20, 85),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 1, cv2.LINE_AA)
-
-        if gate_ok:
-            # Match the training pipeline exactly: resample to the target
-            # sequence length FIRST, then append velocity (frame-to-frame
-            # deltas). Resampling is a no-op when the buffer length equals
-            # target_seq_len, but guarantees identical temporal normalization
-            # if the window size is ever changed.
-            seq = resample_sequence(raw, target_len=seq_len)
-
-            use_velocity = model_config['preprocessing'].get('use_velocity', False)
-            if use_velocity:
-                delta = np.diff(seq, axis=0, prepend=seq[:1])
-                seq = np.concatenate([seq, delta], axis=1)
-
-            tensor_x = torch.tensor(seq, dtype=torch.float32).unsqueeze(0).to(device)
-
-            with torch.no_grad():
-                logits = model(tensor_x)
-                probs = torch.softmax(logits, dim=1).cpu().numpy()[0]
-                top3_idx = np.argsort(probs)[::-1][:3]
-                top3 = [(class_names[i], probs[i]) for i in top3_idx]
-                best_idx = top3_idx[0]
-                best_prob = probs[best_idx]
-
-                last_probs = top3  # for on-screen display
-
-                if best_prob >= threshold:
-                    recent_preds.append(class_names[best_idx])
-                    # Temporal debounce: majority vote
-                    majority = max(set(recent_preds), key=recent_preds.count)
-                    current_label = majority
-                    confidence = best_prob
-
-        # Render subtitle overlay
-        cv2.rectangle(frame, (0, h - 110), (w, h), (20, 20, 20), -1)
-        if confidence > 0:
-            color = (0, 255, 128) if confidence >= threshold else (0, 200, 255)
-            cv2.putText(frame, f"Sign: {current_label} ({confidence*100:.1f}%)",
-                        (20, h - 25), cv2.FONT_HERSHEY_SIMPLEX, 0.9,
-                        color, 2, cv2.LINE_AA)
-        else:
-            cv2.putText(frame, f"Sign: {current_label}",
-                        (20, h - 25), cv2.FONT_HERSHEY_SIMPLEX, 0.9,
-                        (160, 160, 160), 2, cv2.LINE_AA)
-
-        # Show live top-3 model guesses (always visible, even below threshold)
-        for k, (name, prob) in enumerate(last_probs[:3]):
-            bar = "#" * int(prob * 30)
-            cv2.putText(frame, f"{name[:28]:28s} {prob*100:4.1f}% {bar}",
-                        (20, h - 80 + k * 18), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
-                        (200, 200, 200), 1, cv2.LINE_AA)
-
-        # Show buffer status
-        cv2.putText(frame, f"Buffer: {len(frame_buffer)}/{seq_len}",
-                    (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
-                    (255, 255, 0), 1, cv2.LINE_AA)
-
-        cv2.imshow("Indian Sign Language Recognition (Live)", frame)
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord('q'):
-            break
-        elif key == ord('r'):
-            # Force recalibration of the normalization anchor
-            # (useful if the signer moves closer/farther mid-session).
-            extractor.reset_anchor()
-            print("Anchor reset — recalibrating...")
-
-    cap.release()
-    cv2.destroyAllWindows()
-    extractor.close()
-    print("Session ended.")
+                    state.reset()
+                    recording = True
+            if mode == 'stream' or recording:
+                feature = extractor.process_frame(frame)
+                tracked = extractor.last_result
+                for landmarks, connections in [
+                    (tracked.pose_landmarks, solutions.holistic.POSE_CONNECTIONS),
+                    (tracked.left_hand_landmarks, solutions.holistic.HAND_CONNECTIONS),
+                    (tracked.right_hand_landmarks, solutions.holistic.HAND_CONNECTIONS),
+                ]:
+                    if landmarks:
+                        solutions.drawing_utils.draw_landmarks(frame, landmarks, connections)
+                if mode == 'segment' and state.buffer:
+                    finalize |= timestamp-state.buffer[0][0] >= inf.get('max_segment_seconds', 8)
+                result = state.push(feature, timestamp, extractor.anchor_valid, mode, finalize)
+                if finalize:
+                    recording = False
+            label = result['label']
+            if result['confidence']:
+                label += f" ({result['confidence']:.1%})"
+            cv2.putText(frame, label, (15, 40), cv2.FONT_HERSHEY_SIMPLEX, .7, (0, 255, 128), 2)
+            for index, (name, probability) in enumerate(result['top3']):
+                cv2.putText(frame, f'{name}: {probability:.1%}', (15, 65+index*20),
+                            cv2.FONT_HERSHEY_SIMPLEX, .45, (255, 255, 255), 1)
+            cv2.putText(frame, f"{mode}: {result['status']} | SPACE record/finish | S mode | R reset | Q quit",
+                        (15, frame.shape[0]-20), cv2.FONT_HERSHEY_SIMPLEX, .45, (255, 255, 255), 1)
+            cv2.imshow('ISL-Sense', frame)
+    finally:
+        cap.release()
+        extractor.close()
+        cv2.destroyAllWindows()
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     run_live()
